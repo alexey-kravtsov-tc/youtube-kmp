@@ -23,6 +23,7 @@ kotlin {
     sourceSets {
         val commonMain by getting {
             dependencies {
+            implementation("com.russhwolf:multiplatform-settings-no-arg:1.1.1")
                 implementation(compose.runtime)
                 implementation(compose.foundation)
                 implementation(compose.material)
@@ -48,6 +49,7 @@ kotlin {
         }
         val desktopMain by getting {
             dependencies {
+            implementation("com.russhwolf:multiplatform-settings-no-arg:1.1.1")
                 implementation(compose.desktop.common)
             }
         }
