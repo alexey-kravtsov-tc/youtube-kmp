@@ -13,6 +13,8 @@ import com.russhwolf.settings.Settings
 
 enum class Screen { WIZARD_YOUTUBE, WIZARD_FIREBASE, WIZARD_GEMINI, WIZARD_SUCCESS, MAIN, SETTINGS }
 
+expect fun getPlatformName(): String
+
 @Composable
 fun App() {
     MaterialTheme {
