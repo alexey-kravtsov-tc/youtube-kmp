@@ -1,8 +1,11 @@
 
-
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -10,8 +13,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.russhwolf.settings.Settings
+import kotlinx.coroutines.launch
 
-enum class Screen { WIZARD_YOUTUBE, WIZARD_FIREBASE, WIZARD_GEMINI, WIZARD_SUCCESS, MAIN, SETTINGS }
+enum class Screen { WIZARD_YOUTUBE, WIZARD_FIREBASE, WIZARD_GEMINI, WIZARD_SUCCESS, MAIN, SETTINGS, VIDEO_DETAILS }
 
 expect fun getPlatformName(): String
 
@@ -30,80 +34,163 @@ fun App() {
         var fbKey by remember { mutableStateOf(settings.getString("fb_key", "")) }
         var geminiKey by remember { mutableStateOf(settings.getString("gemini_key", "")) }
 
+        val pipedClient = remember { PipedClient(settings) }
+        val scope = rememberCoroutineScope()
+        var searchQuery by remember { mutableStateOf("") }
+        var suggestions by remember { mutableStateOf(emptyList<String>()) }
+        var selectedVideoId by remember { mutableStateOf<String?>(null) }
+        var streamInfo by remember { mutableStateOf<PipedStreamResponse?>(null) }
+
         Surface(modifier = Modifier.fillMaxSize()) {
-            when (currentScreen) {
-                Screen.WIZARD_YOUTUBE -> WizardStep(
-                    title = "Step 1: YouTube API",
-                    description = "Get YouTube Data API v3 key from Google Cloud Console.",
-                    link = "https://console.cloud.google.com/",
-                    value1 = ytKey, label1 = "YouTube API Key", onValue1Change = { ytKey = it },
-                    onNext = { currentScreen = Screen.WIZARD_FIREBASE }
-                )
-                Screen.WIZARD_FIREBASE -> WizardStep(
-                    title = "Step 2: Firebase",
-                    description = "Provide Firebase Storage URL and API Key.",
-                    link = "https://console.firebase.google.com/",
-                    value1 = fbStorage, label1 = "Storage URL", onValue1Change = { fbStorage = it },
-                    value2 = fbKey, label2 = "API Key", onValue2Change = { fbKey = it },
-                    onNext = { currentScreen = Screen.WIZARD_GEMINI }
-                )
-                Screen.WIZARD_GEMINI -> WizardStep(
-                    title = "Step 3: Gemini API",
-                    description = "Get Gemini API key from Google AI Studio.",
-                    link = "https://aistudio.google.com/",
-                    value1 = geminiKey, label1 = "Gemini API Key", onValue1Change = { geminiKey = it },
-                    onNext = {
-                        settings.putString("yt_key", ytKey)
-                        settings.putString("fb_storage", fbStorage)
-                        settings.putString("fb_key", fbKey)
-                        settings.putString("gemini_key", geminiKey)
-                        currentScreen = Screen.WIZARD_SUCCESS
-                    }
-                )
-                Screen.WIZARD_SUCCESS -> {
-                    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                        Text("Success! Keys Saved.")
-                        Spacer(Modifier.height(16.dp))
-                        Button(onClick = { currentScreen = Screen.MAIN }) { Text("Go to Main Screen") }
-                    }
+            val discoveryState = pipedClient.discoveryState
+            if (discoveryState != null) {
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(16.dp))
+                    Text(discoveryState)
                 }
-                Screen.MAIN -> {
-                    Scaffold(
-                        topBar = {
-                            TopAppBar(
-                                title = { Text("YouTube Own Way") },
-                                actions = {
-                                    IconButton(onClick = { currentScreen = Screen.SETTINGS }) {
-                                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+            } else {
+                when (currentScreen) {
+                    Screen.WIZARD_YOUTUBE -> WizardStep(
+                        title = "Step 1: YouTube API",
+                        description = "Get YouTube Data API v3 key from Google Cloud Console.",
+                        link = "https://console.cloud.google.com/",
+                        value1 = ytKey, label1 = "YouTube API Key", onValue1Change = { ytKey = it },
+                        onNext = { currentScreen = onYoutubeNext() }
+                    )
+                    Screen.WIZARD_FIREBASE -> WizardStep(
+                        title = "Step 2: Firebase",
+                        description = "Provide Firebase Storage URL and API Key.",
+                        link = "https://console.firebase.google.com/",
+                        value1 = fbStorage, label1 = "Storage URL", onValue1Change = { fbStorage = it },
+                        value2 = fbKey, label2 = "API Key", onValue2Change = { fbKey = it },
+                        onNext = { currentScreen = onFirebaseNext() }
+                    )
+                    Screen.WIZARD_GEMINI -> WizardStep(
+                        title = "Step 3: Gemini API",
+                        description = "Get Gemini API key from Google AI Studio.",
+                        link = "https://aistudio.google.com/",
+                        value1 = geminiKey, label1 = "Gemini API Key", onValue1Change = { geminiKey = it },
+                        onNext = {
+                            currentScreen = onGeminiNext(settings, ytKey, fbStorage, fbKey, geminiKey)
+                        }
+                    )
+                    Screen.WIZARD_SUCCESS -> {
+                        Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                            Text("Success! Keys Saved.")
+                            Spacer(Modifier.height(16.dp))
+                            Button(onClick = { currentScreen = Screen.MAIN }) { Text("Go to Main Screen") }
+                        }
+                    }
+                    Screen.MAIN -> {
+                        Scaffold(
+                            topBar = {
+                                TopAppBar(
+                                    title = { Text("YouTube Own Way") },
+                                    actions = {
+                                        IconButton(onClick = { currentScreen = Screen.SETTINGS }) {
+                                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                                        }
+                                    }
+                                )
+                            }
+                        ) { innerPadding ->
+                            Column(Modifier.fillMaxSize().padding(innerPadding).padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        label = { Text("Search or Catalog Query") },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    IconButton(onClick = {
+                                        scope.launch {
+                                            suggestions = fetchCatalog(pipedClient, searchQuery)
+                                        }
+                                    }) {
+                                        Icon(Icons.Default.Search, contentDescription = "Search")
                                     }
                                 }
-                            )
-                        }
-                    ) { innerPadding ->
-                        Box(Modifier.fillMaxSize().padding(innerPadding), contentAlignment = Alignment.Center) {
-                            Text("Main Screen (Blank)")
+                                Spacer(Modifier.height(16.dp))
+                                Text("Catalog (Suggestions):", style = MaterialTheme.typography.h6)
+                                LazyColumn {
+                                    items(suggestions) { suggestion ->
+                                        Card(
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
+                                                scope.launch {
+                                                    val result = openStream(pipedClient, suggestion)
+                                                    if (result != null) {
+                                                        selectedVideoId = result.first
+                                                        streamInfo = result.second
+                                                        currentScreen = Screen.VIDEO_DETAILS
+                                                    }
+                                                }
+                                            },
+                                            elevation = 2.dp
+                                        ) {
+                                            Text(suggestion, modifier = Modifier.padding(16.dp))
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                }
-                Screen.SETTINGS -> {
-                    Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Settings", style = MaterialTheme.typography.h5)
-                        Spacer(Modifier.height(16.dp))
-                        OutlinedTextField(value = ytKey, onValueChange = { ytKey = it }, label = { Text("YouTube API Key") })
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = fbStorage, onValueChange = { fbStorage = it }, label = { Text("Firebase Storage URL") })
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = fbKey, onValueChange = { fbKey = it }, label = { Text("Firebase API Key") })
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(value = geminiKey, onValueChange = { geminiKey = it }, label = { Text("Gemini API Key") })
-                        Spacer(Modifier.height(16.dp))
-                        Button(onClick = {
-                            settings.putString("yt_key", ytKey)
-                            settings.putString("fb_storage", fbStorage)
-                            settings.putString("fb_key", fbKey)
-                            settings.putString("gemini_key", geminiKey)
-                            currentScreen = Screen.MAIN
-                        }) { Text("Save & Return") }
+                    Screen.VIDEO_DETAILS -> {
+                        Scaffold(
+                            topBar = {
+                                TopAppBar(
+                                    title = { Text("Stream Info") },
+                                    navigationIcon = {
+                                        IconButton(onClick = { currentScreen = Screen.MAIN }) {
+                                            Text("Back")
+                                        }
+                                    }
+                                )
+                            }
+                        ) { innerPadding ->
+                            Column(Modifier.fillMaxSize().padding(innerPadding).padding(16.dp)) {
+                                Text("Video ID: $selectedVideoId", style = MaterialTheme.typography.h6)
+                                Spacer(Modifier.height(16.dp))
+                                if (streamInfo != null) {
+                                    Text("HLS: ${streamInfo?.hls ?: "N/A"}")
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Dash: ${streamInfo?.dash ?: "N/A"}")
+                                    Spacer(Modifier.height(16.dp))
+                                    Text("Streams:", style = MaterialTheme.typography.subtitle1)
+                                    LazyColumn {
+                                        items(streamInfo?.videoStreams ?: emptyList()) { stream ->
+                                            Text("${stream.quality} (${stream.format}): ${stream.url}", style = MaterialTheme.typography.caption)
+                                            Divider()
+                                        }
+                                    }
+                                } else {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                        }
+                    }
+                    Screen.SETTINGS -> {
+                        Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("Settings", style = MaterialTheme.typography.h5)
+                            Spacer(Modifier.height(16.dp))
+                            OutlinedTextField(value = ytKey, onValueChange = { ytKey = it }, label = { Text("YouTube API Key") })
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(value = fbStorage, onValueChange = { fbStorage = it }, label = { Text("Firebase Storage URL") })
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(value = fbKey, onValueChange = { fbKey = it }, label = { Text("Firebase API Key") })
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(value = geminiKey, onValueChange = { geminiKey = it }, label = { Text("Gemini API Key") })
+                            Spacer(Modifier.height(16.dp))
+                            Button(onClick = {
+                                saveSettings(settings, ytKey, fbStorage, fbKey, geminiKey)
+                                currentScreen = Screen.MAIN
+                            }) { Text("Save & Return") }
+                        }
                     }
                 }
             }
