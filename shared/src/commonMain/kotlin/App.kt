@@ -3,6 +3,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
@@ -13,11 +15,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.russhwolf.settings.Settings
+import io.kamel.image.KamelImage
+import io.kamel.image.asyncPainterResource
 import kotlinx.coroutines.launch
 
 enum class Screen { WIZARD_YOUTUBE, WIZARD_FIREBASE, WIZARD_GEMINI, WIZARD_SUCCESS, MAIN, SETTINGS, VIDEO_DETAILS }
 
 expect fun getPlatformName(): String
+expect fun log(message: String)
+
+@Composable
+expect fun VideoPlayer(url: String, modifier: Modifier, onError: (String) -> Unit = {})
 
 @Composable
 fun App() {
@@ -37,9 +45,9 @@ fun App() {
         val pipedClient = remember { PipedClient(settings) }
         val scope = rememberCoroutineScope()
         var searchQuery by remember { mutableStateOf("") }
-        var suggestions by remember { mutableStateOf(emptyList<String>()) }
-        var selectedVideoId by remember { mutableStateOf<String?>(null) }
+        var videos by remember { mutableStateOf(emptyList<PipedVideo>()) }
         var streamInfo by remember { mutableStateOf<PipedStreamResponse?>(null) }
+        var errorMessage by remember { mutableStateOf<String?>(null) }
 
         Surface(modifier = Modifier.fillMaxSize()) {
             val discoveryState = pipedClient.discoveryState
@@ -110,30 +118,60 @@ fun App() {
                                     Spacer(Modifier.width(8.dp))
                                     IconButton(onClick = {
                                         scope.launch {
-                                            suggestions = fetchCatalog(pipedClient, searchQuery)
+                                            videos = fetchCatalog(pipedClient, searchQuery)
                                         }
                                     }) {
                                         Icon(Icons.Default.Search, contentDescription = "Search")
                                     }
                                 }
                                 Spacer(Modifier.height(16.dp))
-                                Text("Catalog (Suggestions):", style = MaterialTheme.typography.h6)
+                                Text("Catalog:", style = MaterialTheme.typography.h6)
+                                errorMessage?.let {
+                                    Text(it, color = Color.Red, style = MaterialTheme.typography.caption)
+                                    Spacer(Modifier.height(8.dp))
+                                }
                                 LazyColumn {
-                                    items(suggestions) { suggestion ->
+                                    items(videos) { video ->
                                         Card(
-                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable {
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).clickable {
+                                                log("App: Video clicked: ${video.title} (${video.videoId})")
                                                 scope.launch {
-                                                    val result = openStream(pipedClient, suggestion)
-                                                    if (result != null) {
-                                                        selectedVideoId = result.first
-                                                        streamInfo = result.second
-                                                        currentScreen = Screen.VIDEO_DETAILS
+                                                    try {
+                                                        val result = openStream(pipedClient, video)
+                                                        if (result != null) {
+                                                            log("App: Stream opened successfully for ${video.videoId}")
+                                                            streamInfo = result.second
+                                                            currentScreen = Screen.VIDEO_DETAILS
+                                                        }
+                                                    } catch (e: Exception) {
+                                                        log("App: Failed to open stream for ${video.videoId}: ${e.message}")
+                                                        val failedUrl = pipedClient.baseUrl
+                                                        errorMessage = "Server $failedUrl failed to fetch stream. Finding new server..."
+                                                        // pipedClient.getStream already blacklisted the URL if it was a server error
+                                                        videos = fetchCatalog(pipedClient, searchQuery)
+                                                        errorMessage = "Switched to new server: ${pipedClient.baseUrl}"
                                                     }
                                                 }
                                             },
-                                            elevation = 2.dp
+                                            elevation = 4.dp
                                         ) {
-                                            Text(suggestion, modifier = Modifier.padding(16.dp))
+                                            Column {
+                                                KamelImage(
+                                                    resource = asyncPainterResource(video.thumbnail),
+                                                    contentDescription = video.title,
+                                                    modifier = Modifier.fillMaxWidth().height(200.dp),
+                                                    onLoading = { progress ->
+                                                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                                            CircularProgressIndicator(progress)
+                                                        }
+                                                    }
+                                                )
+                                                Column(Modifier.padding(16.dp)) {
+                                                    Text(video.title, style = MaterialTheme.typography.subtitle1)
+                                                    Spacer(Modifier.height(4.dp))
+                                                    Text(video.uploaderName, style = MaterialTheme.typography.caption)
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -144,7 +182,7 @@ fun App() {
                         Scaffold(
                             topBar = {
                                 TopAppBar(
-                                    title = { Text("Stream Info") },
+                                    title = { Text(streamInfo?.title ?: "Video Details") },
                                     navigationIcon = {
                                         IconButton(onClick = { currentScreen = Screen.MAIN }) {
                                             Text("Back")
@@ -153,23 +191,46 @@ fun App() {
                                 )
                             }
                         ) { innerPadding ->
-                            Column(Modifier.fillMaxSize().padding(innerPadding).padding(16.dp)) {
-                                Text("Video ID: $selectedVideoId", style = MaterialTheme.typography.h6)
-                                Spacer(Modifier.height(16.dp))
+                            Column(Modifier.fillMaxSize().padding(innerPadding).verticalScroll(rememberScrollState())) {
                                 if (streamInfo != null) {
-                                    Text("HLS: ${streamInfo?.hls ?: "N/A"}")
-                                    Spacer(Modifier.height(8.dp))
-                                    Text("Dash: ${streamInfo?.dash ?: "N/A"}")
-                                    Spacer(Modifier.height(16.dp))
-                                    Text("Streams:", style = MaterialTheme.typography.subtitle1)
-                                    LazyColumn {
-                                        items(streamInfo?.videoStreams ?: emptyList()) { stream ->
-                                            Text("${stream.quality} (${stream.format}): ${stream.url}", style = MaterialTheme.typography.caption)
-                                            Divider()
+                                    val streamUrl = streamInfo?.hls ?: streamInfo?.videoStreams?.firstOrNull { !it.videoOnly!! }?.url
+                                    if (streamUrl != null) {
+                                        log("App: Playing stream: $streamUrl")
+                                        VideoPlayer(
+                                            url = streamUrl,
+                                            modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+                                            onError = { error ->
+                                                log("App: VideoPlayer ERROR: $error")
+                                                scope.launch {
+                                                    val failedUrl = pipedClient.baseUrl
+                                                    log("App: Blacklisting server $failedUrl due to playback error.")
+                                                    pipedClient.blacklistCurrent()
+                                                    errorMessage = "Server $failedUrl failed to play stream. Finding new server..."
+                                                    currentScreen = Screen.MAIN
+                                                    log("App: Refreshing catalog from new server...")
+                                                    videos = fetchCatalog(pipedClient, searchQuery)
+                                                    log("App: Switched to new server: ${pipedClient.baseUrl}")
+                                                    errorMessage = "Switched to new server: ${pipedClient.baseUrl}"
+                                                }
+                                            }
+                                        )
+                                    } else {
+                                        Box(Modifier.fillMaxWidth().aspectRatio(16f/9f).padding(16.dp), contentAlignment = Alignment.Center) {
+                                            Text("No stream available")
                                         }
                                     }
+
+                                    Column(Modifier.padding(16.dp)) {
+                                        Text(streamInfo?.title ?: "", style = MaterialTheme.typography.h6)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(streamInfo?.uploader ?: "", style = MaterialTheme.typography.subtitle1)
+                                        Spacer(Modifier.height(16.dp))
+                                        Text(streamInfo?.description ?: "", style = MaterialTheme.typography.body2)
+                                    }
                                 } else {
-                                    CircularProgressIndicator()
+                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                        CircularProgressIndicator()
+                                    }
                                 }
                             }
                         }

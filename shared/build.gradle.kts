@@ -34,6 +34,7 @@ kotlin {
                 implementation("io.ktor:ktor-client-core:2.3.7")
                 implementation("io.ktor:ktor-client-content-negotiation:2.3.7")
                 implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.7")
+                implementation("media.kamel:kamel-image:0.9.3")
             }
         }
         val androidMain by getting {
@@ -42,6 +43,9 @@ kotlin {
                 api("androidx.appcompat:appcompat:1.6.1")
                 api("androidx.core:core-ktx:1.10.1")
                 implementation("io.ktor:ktor-client-okhttp:2.3.7")
+                implementation("androidx.media3:media3-exoplayer:1.2.0")
+                implementation("androidx.media3:media3-ui:1.2.0")
+                implementation("androidx.media3:media3-datasource-okhttp:1.2.0")
             }
         }
         val iosX64Main by getting

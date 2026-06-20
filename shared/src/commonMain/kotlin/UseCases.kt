@@ -28,21 +28,16 @@ fun onGeminiNext(
     return Screen.WIZARD_SUCCESS
 }
 
-suspend fun fetchCatalog(pipedClient: PipedClient, query: String): List<String> {
+suspend fun fetchCatalog(pipedClient: PipedClient, query: String): List<PipedVideo> {
     return if (query.isNotBlank()) {
-        pipedClient.getSuggestions(query)
+        pipedClient.search(query)
     } else {
-        emptyList()
+        pipedClient.getTrending()
     }
 }
 
-suspend fun openStream(pipedClient: PipedClient, suggestion: String): Pair<String, PipedStreamResponse>? {
-    val videos = pipedClient.search(suggestion)
-    return if (videos.isNotEmpty()) {
-        val videoId = videos.first().videoId
-        val stream = pipedClient.getStream(videoId)
-        videoId to stream
-    } else {
-        null
-    }
+suspend fun openStream(pipedClient: PipedClient, video: PipedVideo): Pair<String, PipedStreamResponse>? {
+    val videoId = video.videoId
+    val stream = pipedClient.getStream(videoId)
+    return videoId to stream
 }
